@@ -28,24 +28,6 @@ results. Medians.
 The index grew because each file carries a filter that lets search skip
 files without the text.
 
-## vs fff
-
-Chromium (509k files), same Mac and queries.
-[Video](demo/fsearch-vs-fff.mp4), [method](demo/vs_fff.py).
-
-| | fsearch | [fff](https://github.com/dmtrKovalenko/fff) |
-|---|---|---|
-| find a file by name | 0.21 ms | 15.4 ms |
-| search inside files | 2.0 ms | 64 ms |
-| slowest 10% inside files | 3.9 ms | 482 ms |
-| typo still finds the file first | 99% | 86% |
-| ready after launch | 28 ms | 2.5 s |
-| memory | 63 MB (whole disk) | 449 MB (that folder) |
-
-Linux kernel (96k files): 0.16 vs 1.8 ms by name, 1.0 vs 26 ms inside
-files. fff reads 5-10% more files: fsearch skips some file types and
-`build/` and `vendor/`.
-
 ## Queries
 
 ```
