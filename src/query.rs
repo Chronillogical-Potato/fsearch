@@ -1146,7 +1146,7 @@ impl Searcher<'_> {
             return s.selective(lo, hi);
         }
 
-        let memo = if s.need_dirs { Some(scored.memo.get_or_init(|| self.dir_tokens(&scored.names))) } else { None };
+        let memo = if s.need_dirs { Some(lazy(&scored.memo, || self.dir_tokens(&scored.names))) } else { None };
         s.full(lo, hi, memo.map(|m| m.as_slice()))
     }
 
@@ -2348,6 +2348,18 @@ fn zeroed(n: usize) -> Vec<Short> {
     }
 }
 
+/// `cell`'s value, built on first use outside its lock: `f` runs rayon jobs,
+/// and a pool thread waiting on them inside `get_or_init` can take on another
+/// search that then waits on that same init, parking every search thread.
+/// Racing searches may each build it; the first one stored is kept.
+fn lazy<T>(cell: &std::sync::OnceLock<T>, f: impl FnOnce() -> T) -> &T {
+    if let Some(v) = cell.get() {
+        return v;
+    }
+    let v = f();
+    cell.get_or_init(|| v)
+}
+
 impl NameTable {
     fn new(bits: Vec<u64>, rank: Vec<u16>, hits: Vec<Vec<NameHit>>, ok_entries: usize, all: bool) -> NameTable {
         let len = hits.iter().map(Vec::len).sum();
@@ -2356,7 +2368,7 @@ impl NameTable {
 
     /// The `dense` view, built on first use.
     fn dense(&self, idx: &Index) -> &[Short] {
-        self.dense.get_or_init(|| {
+        lazy(&self.dense, || {
             let spare = DENSE_POOL.lock().unwrap().pop().filter(|d| d.len() == idx.words * 64);
             // A fresh one comes zeroed (all `Short::default()`) from the
             // allocator, which maps zero pages in without writing them.
