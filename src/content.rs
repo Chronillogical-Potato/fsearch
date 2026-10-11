@@ -3146,7 +3146,8 @@ pub fn open_regular(path: &[u8]) -> Option<std::fs::File> {
 fn open_sized(path: &[u8]) -> Option<(std::fs::File, u64)> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::OpenOptionsExt;
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(std::ffi::OsStr::from_bytes(path)).ok()?;
+    let f =
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | crate::walk::NOFOLLOW).open(std::ffi::OsStr::from_bytes(path)).ok()?;
     let m = f.metadata().ok()?;
     m.is_file().then_some((f, m.len()))
 }

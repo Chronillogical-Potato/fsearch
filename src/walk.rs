@@ -115,7 +115,14 @@ pub fn list_one(path: &[u8]) -> Option<Listing> {
     Some(l)
 }
 
-const OPEN_DIR: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+// O_NOFOLLOW only checks the last component of a full path; O_NOFOLLOW_ANY
+// refuses a link anywhere in it. It needs macOS 11, so Apple Silicon only.
+#[cfg(target_arch = "aarch64")]
+pub(crate) const NOFOLLOW: i32 = libc::O_NOFOLLOW_ANY;
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) const NOFOLLOW: i32 = libc::O_NOFOLLOW;
+
+const OPEN_DIR: i32 = libc::O_RDONLY | libc::O_DIRECTORY | NOFOLLOW | libc::O_CLOEXEC;
 
 /// Directory fd shared by the tasks that still need to openat() a child.
 struct Fd(i32);
