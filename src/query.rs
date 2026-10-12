@@ -627,7 +627,8 @@ impl Query {
     pub fn kind_ok(&self, kind: u8) -> bool {
         match self.kind {
             None => true,
-            Some(want) => kind & 3 == want || (self.apps && kind & 3 == KIND_LINK),
+            // (Links stand in for app folders only, not under a later kind:file.)
+            Some(want) => kind & 3 == want || (self.apps && want == KIND_DIR && kind & 3 == KIND_LINK),
         }
     }
 
@@ -4079,5 +4080,12 @@ mod tests {
     fn mtime_older_than_u32() {
         let q = Query::parse("mtime:>140y", "/h").unwrap();
         assert_eq!(q.mtime, (0, 0));
+    }
+
+    /// type:app takes symlinks as folders; kind:file after it means files.
+    #[test]
+    fn app_links_only_as_folders() {
+        assert!(Query::parse("type:app", "/h").unwrap().kind_ok(KIND_LINK));
+        assert!(!Query::parse("type:app kind:file", "/h").unwrap().kind_ok(KIND_LINK));
     }
 }
