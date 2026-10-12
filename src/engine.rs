@@ -227,8 +227,12 @@ impl Engine {
     /// Start indexing in the background and return at once. Searches wait
     /// while a saved index loads, and answer `Err` while the very first run
     /// builds one.
-    pub fn start(opts: Options) -> Result<Engine, String> {
+    pub fn start(mut opts: Options) -> Result<Engine, String> {
         std::fs::create_dir_all(&opts.dir).map_err(|e| e.to_string())?;
+        // Home as paths are compared to it: "/h/" put nothing in content scope.
+        if opts.home.len() > 1 && opts.home.ends_with('/') {
+            opts.home = opts.home.trim_end_matches('/').to_string();
+        }
         // One writer per index: a second one would race index writes. The
         // lock dies with the process.
         let lock = std::fs::File::create(opts.dir.join("daemon.lock")).map_err(|e| e.to_string())?;
@@ -694,6 +698,7 @@ const GATED_IN_HOME: &[&str] = &[
 
 /// Folders macOS guards with a consent prompt (or that hold other volumes).
 pub fn gated(home: &str) -> Vec<Vec<u8>> {
+    let home = home.trim_end_matches('/');
     GATED_IN_HOME.iter().map(|d| format!("{home}/{d}").into_bytes()).chain([b"/Volumes".to_vec()]).collect()
 }
 
@@ -1172,4 +1177,31 @@ fn apply_loop(shared: &Arc<Shared>, rx: Receiver<Vec<fsevents::Event>>) {
 /// Default data dir: `~/Library/Application Support/FSearch`.
 pub fn default_dir(home: &str) -> PathBuf {
     Path::new(home).join("Library/Application Support/FSearch")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("fsearch-engine-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Home written with a trailing slash is home: content scope and the
+    /// gated folders compare paths to it.
+    #[test]
+    fn home_with_trailing_slash() {
+        assert_eq!(gated("/h/")[0], b"/h/Desktop");
+        let d = scratch("home");
+        // Held for good, so this engine follows and never crawls the disk.
+        let held = std::fs::File::create(d.join("daemon.lock")).unwrap();
+        assert!(try_lock(&held));
+        std::mem::forget(held);
+        let e = Engine::start(Options { dir: d.clone(), home: "/h//".into(), skip: Some(Vec::new()) }).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(e.home(), "/h");
+    }
 }
