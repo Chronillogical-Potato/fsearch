@@ -177,12 +177,14 @@ impl Live {
     }
 
     fn drop_over_subtree(&mut self, path: &[u8]) {
+        self.priors.remove(path);
         if let Some(o) = self.over.remove(path) {
             self.flat.clear(o);
         }
         let (lo, hi) = subtree_bounds(path);
         let keys: Vec<Vec<u8>> = self.over.range(lo..hi).map(|(k, _)| k.clone()).collect();
         for k in keys {
+            self.priors.remove(&k);
             if let Some(o) = self.over.remove(&k) {
                 self.flat.clear(o);
             }
