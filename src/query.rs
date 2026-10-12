@@ -3866,7 +3866,7 @@ impl NameTable {
 
     /// The `dense` view, built on first use.
     fn dense(&self, idx: &Index) -> &[Short] {
-        lazy(&self.dense, || {
+        lazy::<Vec<Short>>(&self.dense, || {
             let spare = DENSE_POOL.lock().unwrap().pop().filter(|d| d.len() == idx.words * 64);
             // A fresh one comes zeroed (all `Short::default()`) from the
             // allocator, which maps zero pages in without writing them.
