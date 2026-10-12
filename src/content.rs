@@ -418,6 +418,10 @@ impl Segment {
             for (w, c) in dead.iter_mut().zip(b.chunks_exact(8)) {
                 *w = u64::from_le_bytes(c.try_into().unwrap());
             }
+            // (Bits past the last doc: a corrupt file.)
+            if let Some(w) = dead.last_mut().filter(|_| !ndocs.is_multiple_of(64)) {
+                *w &= (1 << (ndocs % 64)) - 1;
+            }
         }
         let live_docs = ndocs - dead.iter().map(|w| w.count_ones() as usize).sum::<usize>();
         #[rustfmt::skip]
@@ -4804,5 +4808,24 @@ mod tests {
         for above in [&b"/"[..], b"/Users"] {
             assert_eq!(synced(above), [(b"/Users/me".to_vec(), true)]);
         }
+    }
+
+    /// Bits past the last doc in a `.dead` file (it is only ever written
+    /// whole, so a corrupt one) are not counted as dead docs.
+    #[test]
+    fn dead_bits_past_the_docs() {
+        let d = std::env::temp_dir().join(format!("fsearch-dead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("a.txt");
+        std::fs::write(&p, "text\n").unwrap();
+        let mut docs = Docs::default();
+        docs.push(p.as_os_str().as_bytes(), 5, 1);
+        let seg = build_segment(&d, 1, &docs, 0..1).unwrap();
+        assert_eq!(seg.live_docs, 1);
+        std::fs::write(dead_path(&d, 1), u64::MAX.to_le_bytes()).unwrap();
+        let seg = Segment::load(&d, 1);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(seg.unwrap().live_docs, 0);
     }
 }
