@@ -225,6 +225,10 @@ impl Live {
         if recursive {
             if f.path != b"/" {
                 f.attrs = lstat(&f.path);
+                // Flagged as a scan would, so the mounted volume isn't crawled.
+                if let Some(a) = f.attrs.as_mut().filter(|a| a.kind & 3 == KIND_DIR && walk::is_mount(&f.path)) {
+                    a.kind |= FLAG_MOUNT;
+                }
                 if f.attrs.is_some_and(|a| a.kind & 3 == KIND_DIR && a.kind & FLAG_MOUNT == 0) {
                     f.scans.insert(f.path.clone(), walk::scan(&f.path, 4));
                 }
@@ -579,5 +583,15 @@ mod tests {
         assert_eq!(live.over.keys().filter(|k| k.starts_with(&root)).map(rel).collect::<Vec<_>>(), ["/swap"]);
         live.trees.sort();
         assert_eq!(live.trees.iter().map(rel).collect::<Vec<_>>(), ["/sub", "/swap"]);
+    }
+
+    /// A recursive event on a mount point (/dev here) doesn't crawl the
+    /// mounted volume: it is an entry flagged as a scan flags it.
+    #[test]
+    fn mount_point_not_crawled() {
+        let live = Live::new(Index::build(vec![Listing::default()], 0, 0, b""));
+        let f = live.fetch(b"/dev", true);
+        assert!(f.scans.is_empty() && f.attrs.is_some_and(|a| a.kind & FLAG_MOUNT != 0));
+        assert!(!walk::is_mount(b"/usr/bin") && !walk::is_mount(b"/Users") && walk::is_mount(b"/System/Volumes/Data"));
     }
 }
