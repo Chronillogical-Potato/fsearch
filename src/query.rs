@@ -1691,7 +1691,7 @@ impl TopK {
     fn push(&mut self, key: u64) {
         if key > self.floor {
             self.buf.push(key);
-            if self.buf.len() >= (2 * self.k).max(64) {
+            if self.buf.len() >= self.k.saturating_mul(2).max(64) {
                 self.cut();
             }
         }
@@ -4057,6 +4057,21 @@ fn rank_tweaks(flags: u8, kind: u8, mtime: u32, now: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::walk::{Listing, NONE, RawEnt};
+
+    /// An index of "/" holding files `abc` and `abd`.
+    fn live() -> Live {
+        let ent = |off| RawEnt { name_off: off, name_len: 3, kind: KIND_FILE, size: 1, mtime: 1, child: NONE };
+        Live::new(Index::build(vec![Listing { id: 0, names: b"abcabd".to_vec(), ents: vec![ent(0), ent(3)] }], 0, 0, b"/h"))
+    }
+
+    /// limit: takes any number; the largest overflowed `TopK`.
+    #[test]
+    fn huge_limit() {
+        let l = live();
+        let q = Query::parse(&format!("limit:{} ab", usize::MAX), "/h").unwrap();
+        assert_eq!(Searcher { live: &l }.search(&q).len(), 2);
+    }
 
     /// An age past what a u32 of seconds holds (136 years) is older than
     /// anything, not an age wrapped around to a few years.
