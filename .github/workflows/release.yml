@@ -1,9 +1,15 @@
-# Push a tag like v0.1.0 to build fsearch and attach it to a GitHub release.
+# Push a tag like v0.1.0 to build fsearch and attach it to the tag's GitHub
+# release, made here if it isn't already. Run it by hand to build an older tag.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build
+        required: true
 
 permissions:
   contents: write
@@ -11,8 +17,12 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
       # .cargo/config.toml targets the build machine's CPU; target every Apple Silicon Mac instead.
       - run: cargo build --release --locked
         env:
@@ -20,6 +30,7 @@ jobs:
       - run: |
           tar -czf fsearch-aarch64-apple-darwin.tar.gz -C target/release fsearch
           shasum -a 256 fsearch-aarch64-apple-darwin.tar.gz > fsearch-aarch64-apple-darwin.tar.gz.sha256
-          gh release create "$GITHUB_REF_NAME" --generate-notes fsearch-aarch64-apple-darwin.tar.gz fsearch-aarch64-apple-darwin.tar.gz.sha256
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --generate-notes
+          gh release upload "$TAG" --clobber fsearch-aarch64-apple-darwin.tar.gz fsearch-aarch64-apple-darwin.tar.gz.sha256
         env:
           GH_TOKEN: ${{ github.token }}
