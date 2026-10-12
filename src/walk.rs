@@ -23,8 +23,40 @@ pub static SKIP: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 /// tracked, i.e. while SKIP is set.
 pub static DENIED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-/// Entries listed by scans so far: the first scan's progress.
+/// Entries the first run's whole-disk crawl has listed so far.
 pub static LISTED: AtomicUsize = AtomicUsize::new(0);
+
+/// Work a search is waiting on (listing or reading one folder): while any
+/// runs, background work (the whole-disk crawl, content builds) waits in
+/// `yield_to_searches`, so the search gets the cores and the kernel to
+/// itself (they are bound by the same per-file kernel costs).
+static HOLD: AtomicUsize = AtomicUsize::new(0);
+
+/// Holds background work off while it lives (see `HOLD`).
+pub struct Hold(());
+
+impl Hold {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Hold {
+        HOLD.fetch_add(1, Ordering::Relaxed);
+        Hold(())
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        HOLD.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Background work's turn: wait while a `Hold` lives, but at most 2 s, so
+/// searches back to back never stall it for good.
+pub fn yield_to_searches() {
+    let t = std::time::Instant::now();
+    while HOLD.load(Ordering::Relaxed) > 0 && t.elapsed() < std::time::Duration::from_secs(2) {
+        std::thread::sleep(std::time::Duration::from_micros(500));
+    }
+}
 
 pub fn blocked(path: &[u8]) -> bool {
     SKIP.get().is_some_and(|v| v.iter().any(|s| path.starts_with(s) && (path.len() == s.len() || path[s.len()] == b'/')))
@@ -60,6 +92,7 @@ pub struct RawEnt {
     pub child: u32,
 }
 
+#[derive(Default)]
 pub struct Listing {
     pub id: u32,
     pub names: Vec<u8>,
@@ -69,6 +102,8 @@ pub struct Listing {
 struct Ctx {
     next_id: AtomicU32,
     out: Vec<Mutex<Vec<Listing>>>,
+    /// The whole-disk crawl: counts LISTED, yields to searches.
+    disk: bool,
 }
 
 thread_local! {
@@ -77,13 +112,43 @@ thread_local! {
 
 /// Scan `root` recursively. Listing id 0 is `root` itself.
 pub fn scan(root: &[u8], threads: usize) -> Vec<Listing> {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| crate::no_materialize()).build().unwrap();
-    let ctx = Ctx { next_id: AtomicU32::new(1), out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect() };
+    scan_with(root, threads, false)
+}
+
+/// The first run's crawl of the whole disk (see `LISTED`, `HOLD`).
+pub fn scan_disk(threads: usize) -> Vec<Listing> {
+    scan_with(b"/", threads, true)
+}
+
+fn scan_with(root: &[u8], threads: usize, disk: bool) -> Vec<Listing> {
     raise_fd_limit();
     let fd = if blocked(root) { -1 } else { CString::new(root).map_or(-1, |c| unsafe { libc::open(c.as_ptr(), OPEN_DIR) }) };
     // Paths are only tracked when there is something to skip.
     let path = SKIP.get().is_some_and(|v| !v.is_empty()).then(|| root.to_vec());
-    pool.scope(|s| finish_dir(s, fd, path, 0, &ctx));
+    let mut l = Listing { id: 0, names: Vec::new(), ents: Vec::new() };
+    if fd >= 0 {
+        if disk {
+            yield_to_searches();
+        }
+        list_fd(fd, &mut l);
+    }
+    // A folder holding no folder (most new ones) needs no pool: its threads
+    // cost ~120 us of CPU a scan, most of what a burst of new folders costs.
+    if !l.ents.iter().any(|e| e.kind & 3 == KIND_DIR && e.kind & FLAG_MOUNT == 0) {
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+        }
+        for e in &mut l.ents {
+            e.kind &= !MAYBE_EMPTY;
+        }
+        if disk {
+            LISTED.fetch_add(l.ents.len(), Ordering::Relaxed);
+        }
+        return vec![l];
+    }
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| crate::no_materialize()).build().unwrap();
+    let ctx = Ctx { next_id: AtomicU32::new(1), out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect(), disk };
+    pool.scope(|s| descend(s, fd, path, l, &ctx));
     let parts: Vec<Vec<Listing>> = ctx.out.into_iter().map(|m| m.into_inner().unwrap()).collect();
     let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
     for p in parts {
@@ -137,7 +202,15 @@ fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &
         push(l, ctx);
         return;
     }
+    if ctx.disk {
+        yield_to_searches();
+    }
     list_fd(fd, &mut l);
+    descend(s, fd, path, l, ctx);
+}
+
+/// Push `l`, the listing of `fd`, and scan its folders.
+fn descend<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, mut l: Listing, ctx: &'s Ctx) {
     let me = std::sync::Arc::new(Fd(fd));
     let mut kids = Vec::new();
     let mut empty = Vec::new();
@@ -191,7 +264,9 @@ fn entry_count(dir: i32, name: &CString) -> Option<u32> {
 }
 
 fn push(l: Listing, ctx: &Ctx) {
-    LISTED.fetch_add(l.ents.len(), Ordering::Relaxed);
+    if ctx.disk {
+        LISTED.fetch_add(l.ents.len(), Ordering::Relaxed);
+    }
     let slot = rayon::current_thread_index().unwrap_or(ctx.out.len() - 1);
     ctx.out[slot].lock().unwrap().push(l);
 }
