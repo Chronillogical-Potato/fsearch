@@ -130,7 +130,6 @@ impl Drop for Stream {
         unsafe {
             let a = api();
             (a.stop)(self.0);
-            (a.set_queue)(self.0, std::ptr::null_mut());
             (a.invalidate)(self.0);
             (a.release)(self.0);
         }
