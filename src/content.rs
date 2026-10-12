@@ -3235,7 +3235,7 @@ pub fn wants(live: &Live, home: &[u8], dirs: &[Vec<u8>], trees: &[Vec<u8>]) -> V
         if in_scope(d, home) {
             // A folder whose ignore files changed: so may all below it.
             out.push((d.clone(), r || scope.rules_changed(d)));
-        } else if r && home.starts_with(d) {
+        } else if r && home.starts_with(d) && (d.ends_with(b"/") || home[d.len()..].starts_with(b"/")) {
             // A subtree containing home (e.g. "/" rescanned): sync all of home.
             out.push((home.to_vec(), true));
         }
@@ -4737,6 +4737,7 @@ fn open_ahead_sized(path: &[u8]) -> Option<(std::fs::File, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::walk::{Listing, RawEnt};
 
     /// The lines of `buf` a grep shows.
     fn lines(g: &Grep, buf: &[u8]) -> Vec<(usize, String)> {
@@ -4784,5 +4785,24 @@ mod tests {
         assert_eq!(r, [e.clone(), e]);
         let plan = |p: &str| format!("{:?}", Grep::new(p, GrepMode::Literal).unwrap().plan());
         assert_eq!(plan("hello world"), format!("{:?}", literal_plan(b"hello world")));
+    }
+
+    /// A rescan of a folder above home syncs all of home; one of a sibling
+    /// whose name home's starts with (/Users/m for /Users/me) does not.
+    #[test]
+    fn trees_above_home() {
+        let dir = |off, len, child| RawEnt { name_off: off, name_len: len, kind: KIND_DIR, size: 0, mtime: 0, child };
+        let ls = vec![
+            Listing { id: 0, names: b"Users".to_vec(), ents: vec![dir(0, 5, 1)] },
+            Listing { id: 1, names: b"mme".to_vec(), ents: vec![dir(0, 1, 2), dir(1, 2, 3)] },
+            Listing { id: 2, ..Default::default() },
+            Listing { id: 3, ..Default::default() },
+        ];
+        let live = Live::new(crate::index::Index::build(ls, 0, 0, b"/Users/me"));
+        let synced = |tree: &[u8]| wants(&live, b"/Users/me", &[], &[tree.to_vec()]).into_iter().map(|w| (w.0, w.1)).collect::<Vec<_>>();
+        assert_eq!(synced(b"/Users/m"), []);
+        for above in [&b"/"[..], b"/Users"] {
+            assert_eq!(synced(above), [(b"/Users/me".to_vec(), true)]);
+        }
     }
 }

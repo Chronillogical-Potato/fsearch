@@ -754,7 +754,9 @@ fn content_loop(shared: &Shared, rx: Receiver<Resync>) {
                 for (d, t) in std::iter::once(first).chain(rx.try_iter()) {
                     for key in d.into_iter().map(|p| (p, false)).chain(t.into_iter().map(|p| (p, true))) {
                         // Most of the disk's churn (Library, caches) is outside the indexed area.
-                        if content::in_scope(&key.0, &home) || (key.1 && home.starts_with(&key.0)) {
+                        if content::in_scope(&key.0, &home)
+                            || (key.1 && home.starts_with(&key.0) && (key.0.ends_with(b"/") || home[key.0.len()..].starts_with(b"/")))
+                        {
                             pending.entry(key.clone()).and_modify(|e| e.1 = now).or_insert((now, now));
                             changed.push(key);
                         }
