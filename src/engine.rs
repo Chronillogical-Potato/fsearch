@@ -238,7 +238,8 @@ impl Engine {
         let lock = std::fs::File::create(opts.dir.join("daemon.lock")).map_err(|e| e.to_string())?;
         let owner = try_lock(&lock);
         let skip: Vec<Vec<u8>> = match opts.skip {
-            Some(v) => v.into_iter().map(|p| p.as_os_str().as_bytes().to_vec()).collect(),
+            // ("/a/" is /a; an empty entry would block everything.)
+            Some(v) => v.iter().map(|p| crate::live::normalize(p.as_os_str().as_bytes())).filter(|p| !p.is_empty()).collect(),
             None if has_full_disk_access() && std::env::var_os("FSEARCH_RESTRICT").is_none() => Vec::new(),
             None => {
                 log("no Full Disk Access: skipping consent-gated folders (grant it to fsearch to index everything)");
@@ -1198,11 +1199,20 @@ pub fn default_dir(home: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
+    /// An engine that follows (the lock is held for good, so it never
+    /// crawls the disk). walk::SKIP is set once per process, so every test
+    /// passes the same list: folders that don't exist, written oddly.
+    fn follower(name: &str, home: &str) -> Engine {
         let d = std::env::temp_dir().join(format!("fsearch-engine-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d
+        let held = std::fs::File::create(d.join("daemon.lock")).unwrap();
+        assert!(try_lock(&held));
+        std::mem::forget(held);
+        let skip = Some(vec![PathBuf::from("/nonexistent-fsearch-skip/"), PathBuf::new()]);
+        let e = Engine::start(Options { dir: d.clone(), home: home.into(), skip }).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        e
     }
 
     /// Home written with a trailing slash is home: content scope and the
@@ -1210,13 +1220,14 @@ mod tests {
     #[test]
     fn home_with_trailing_slash() {
         assert_eq!(gated("/h/")[0], b"/h/Desktop");
-        let d = scratch("home");
-        // Held for good, so this engine follows and never crawls the disk.
-        let held = std::fs::File::create(d.join("daemon.lock")).unwrap();
-        assert!(try_lock(&held));
-        std::mem::forget(held);
-        let e = Engine::start(Options { dir: d.clone(), home: "/h//".into(), skip: Some(Vec::new()) }).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(e.home(), "/h");
+        assert_eq!(follower("home", "/h//").home(), "/h");
+    }
+
+    /// Skip entries are folders however written: "/a/" is /a, and an empty
+    /// one blocks nothing.
+    #[test]
+    fn skip_entries() {
+        follower("skip", "/h");
+        assert!(walk::blocked(b"/nonexistent-fsearch-skip/x") && !walk::blocked(b"/usr"));
     }
 }
