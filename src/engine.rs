@@ -1044,7 +1044,9 @@ impl Pace {
 fn apply_loop(shared: &Arc<Shared>, rx: Receiver<Vec<fsevents::Event>>) {
     let mut last_save = Instant::now();
     let mut last_follow = Instant::now();
-    let ours = shared.dir.as_os_str().as_bytes();
+    // As FSEvents reports it: real (a temp dir's /var is /private/var).
+    let real = shared.dir.canonicalize().unwrap_or_else(|_| shared.dir.clone());
+    let ours = real.as_os_str().as_bytes();
     // Events fseventsd dropped before we read them: (replay from, last drop).
     let mut gap: Option<(u64, Instant)> = None;
     // Replays in a row that dropped again; the third falls back to a relist.
@@ -1061,7 +1063,7 @@ fn apply_loop(shared: &Arc<Shared>, rx: Receiver<Vec<fsevents::Event>>) {
         events.extend(rx.try_iter().flatten());
         // The owner wrote the index files: a follower picks that up now
         // rather than at its next periodic check.
-        let owner_wrote = events.iter().any(|e| e.path.starts_with(ours));
+        let owner_wrote = events.iter().any(|e| under(&e.path, ours));
         let (mut rebuild, mut root_flags, had_events) = (false, 0, !events.is_empty());
         let (mut dirs, mut max_id): (HashMap<Vec<u8>, (bool, u64)>, u64) = (HashMap::new(), 0);
         if had_events {
