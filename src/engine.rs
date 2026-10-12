@@ -301,12 +301,19 @@ impl Engine {
                     s.watch(since);
                     (Live::lazy(full_build(&s, since)), None)
                 }
-                None => {
-                    // The owner is building it; follow once it exists.
-                    let b = wait_for_index(&s.dir);
-                    s.watch(b.event_id);
-                    (Live::lazy(b), None)
-                }
+                None => match wait_for_index(&s) {
+                    // The owner is building it; follow once it exists...
+                    Some(b) => {
+                        s.watch(b.event_id);
+                        (Live::lazy(b), None)
+                    }
+                    // ...or build it, if the owner quit first.
+                    None => {
+                        let since = fsevents::current_id();
+                        s.watch(since);
+                        (Live::lazy(full_build(&s, since)), None)
+                    }
+                },
             };
             *s.live.write().unwrap() = Some(live);
             s.early.lock().unwrap().clear();
@@ -681,10 +688,15 @@ fn folder_listings(dir: &[u8]) -> Vec<Listing> {
     out
 }
 
-fn wait_for_index(dir: &Path) -> Index {
+/// The index the owner saves, or None once we took over from an owner that
+/// quit before saving one.
+fn wait_for_index(s: &Arc<Shared>) -> Option<Index> {
     loop {
-        if let Some(b) = Index::load(&dir.join("index.bin")) {
-            return b;
+        if let Some(b) = Index::load(&s.dir.join("index.bin")) {
+            return Some(b);
+        }
+        if try_upgrade(s) {
+            return Index::load(&s.dir.join("index.bin"));
         }
         std::thread::sleep(Duration::from_secs(1));
     }
