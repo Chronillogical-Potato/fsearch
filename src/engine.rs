@@ -507,7 +507,7 @@ fn wait_for_index(dir: &Path) -> Index {
 #[rustfmt::skip]
 const GATED_IN_HOME: &[&str] = &[
     "Desktop", "Documents", "Downloads", "Library/Mobile Documents", "Library/Containers", "Library/Group Containers",
-    "Library/CloudStorage", "Pictures/Photos Library.photoslibrary",
+    "Library/CloudStorage", "Pictures/Photos Library.photoslibrary", "Music/Music", "Movies/TV",
 ];
 
 /// Folders macOS guards with a consent prompt (or that hold other volumes).
