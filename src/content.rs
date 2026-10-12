@@ -3418,7 +3418,9 @@ impl Grep {
     }
 
     fn build(&self) -> Result<Regex, String> {
-        RegexBuilder::new(&self.src).case_insensitive(self.case_insensitive).multi_line(true).size_limit(1 << 26).build().map_err(|e| e.to_string())
+        // CRLF: `$` also matches before a \r\n line end (Windows files).
+        let b = RegexBuilder::new(&self.src).case_insensitive(self.case_insensitive).multi_line(true).crlf(true).size_limit(1 << 26).build();
+        b.map_err(|e| e.to_string())
     }
 
     fn re(&self) -> &Regex {
@@ -4707,4 +4709,21 @@ fn open_ahead_sized(path: &[u8]) -> Option<(std::fs::File, u64)> {
     let ra = libc::radvisory { ra_offset: 0, ra_count: len.min(MAX_REPO_FILE + 1) as libc::c_int };
     unsafe { libc::fcntl(f.as_raw_fd(), libc::F_RDADVISE, &ra) };
     Some((f, len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lines of `buf` a grep shows.
+    fn lines(g: &Grep, buf: &[u8]) -> Vec<(usize, String)> {
+        matches_in(g, b"/f", buf, false).map_or(Vec::new(), |f| f.lines)
+    }
+
+    /// `$` ends a line before a \r\n as before a \n.
+    #[test]
+    fn crlf_line_ends() {
+        let g = Grep::new("foo$", GrepMode::Regex).unwrap();
+        assert_eq!(lines(&g, b"foo\r\nbar\r\nfoo"), [(1, "foo".to_string()), (3, "foo".to_string())]);
+    }
 }
