@@ -880,15 +880,16 @@ fn full_build(shared: &Shared, event_id: u64) -> Index {
     let ls = walk::scan_disk(SCAN_THREADS);
     let idx = Index::build(ls, event_id, started, shared.home.as_bytes());
     let path = shared.dir.join("index.bin");
-    if let Err(e) = idx.save(&path) {
+    let saved = idx.save(&path);
+    if let Err(e) = &saved {
         log(format!("save failed: {e}"));
     }
     note_skipped(&shared.dir);
     log(format!("indexed {} entries in {:.2?}", idx.n, t.elapsed()));
     release_memory();
     // Re-map from the file so the index is clean, evictable page cache
-    // rather than anonymous memory.
-    Index::load(&path).unwrap_or(idx)
+    // rather than anonymous memory. (After a failed save the file is older.)
+    if saved.is_ok() { Index::load(&path).unwrap_or(idx) } else { idx }
 }
 
 unsafe extern "C" {
@@ -910,11 +911,13 @@ fn compact(shared: &Shared) {
     };
     let idx = Index::build(ls, eid, synced, shared.home.as_bytes());
     let path = shared.dir.join("index.bin");
-    if let Err(e) = idx.save(&path) {
+    let saved = idx.save(&path);
+    if let Err(e) = &saved {
         log(format!("save failed: {e}"));
     }
     note_skipped(&shared.dir);
-    let idx = Index::load(&path).unwrap_or(idx);
+    // (After a failed save the file is older: keep the one just built.)
+    let idx = if saved.is_ok() { Index::load(&path).unwrap_or(idx) } else { idx };
     let n = idx.n;
     *shared.live.write().unwrap() = Some(Live::new(idx));
     release_memory();
