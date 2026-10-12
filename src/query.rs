@@ -602,7 +602,7 @@ impl Query {
                 // mtime:<7d means "modified within the last 7 days".
                 let now = now_secs();
                 let (lo, hi) = range(v, parse_age)?;
-                self.mtime = (now.saturating_sub(hi.min(now as u64) as u32), now.saturating_sub(lo as u32));
+                self.mtime = (now.saturating_sub(hi.min(now as u64) as u32), now.saturating_sub(lo.min(now as u64) as u32));
                 if hi == u64::MAX {
                     self.mtime.0 = 0;
                 }
@@ -4052,4 +4052,17 @@ fn rank_tweaks(flags: u8, kind: u8, mtime: u32, now: u32) -> i32 {
         _ => 0,
     };
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An age past what a u32 of seconds holds (136 years) is older than
+    /// anything, not an age wrapped around to a few years.
+    #[test]
+    fn mtime_older_than_u32() {
+        let q = Query::parse("mtime:>140y", "/h").unwrap();
+        assert_eq!(q.mtime, (0, 0));
+    }
 }
