@@ -3277,6 +3277,12 @@ struct Probes {
     short: Vec<u32>,
 }
 
+/// Does the pattern hold a non-ASCII letter with another case (é, É)? A
+/// case-insensitive match may then hold other bytes for it.
+fn cased(pattern: &str) -> bool {
+    pattern.chars().any(|c| !c.is_ascii() && !c.to_lowercase().eq(c.to_uppercase()))
+}
+
 /// How a pattern's letter case matters.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub enum Case {
@@ -3430,11 +3436,14 @@ impl Grep {
 
     /// Hashes of the grams every match holds (see `SHORT`).
     fn probes(&self) -> Probes {
+        // (A non-ASCII letter's other case may be other bytes.)
+        let cased = self.case_insensitive && cased(&self.pattern);
         let grams = |n: usize| {
             let mut out: Vec<u32> = if self.mode == GrepMode::Regex {
                 Vec::new()
             } else {
-                self.pattern.as_bytes().windows(n).map(|w| gram_hash(w.iter().fold(0, |g, &b| g << 8 | fold(b) as u64))).collect()
+                let grams = self.pattern.as_bytes().windows(n).filter(|w| !cased || w.is_ascii());
+                grams.map(|w| gram_hash(w.iter().fold(0, |g, &b| g << 8 | fold(b) as u64))).collect()
             };
             out.sort_unstable();
             out.dedup();
@@ -3444,13 +3453,16 @@ impl Grep {
     }
 
     fn plan(&self) -> TQ {
-        match self.mode {
+        let q = match self.mode {
             // Exactly the docs that define it (plus rare hash collisions,
             // which reading the file weeds out).
-            GrepMode::Symbol if plain_identifier(self.pattern.as_bytes()) => TQ::Tri(symbol_key(self.pattern.as_bytes())),
+            GrepMode::Symbol if plain_identifier(self.pattern.as_bytes()) => return TQ::Tri(symbol_key(self.pattern.as_bytes())),
             GrepMode::Literal | GrepMode::Symbol => literal_plan(self.pattern.as_bytes()),
             GrepMode::Regex => regex_syntax::Parser::new().parse(&self.pattern).map_or(TQ::All, |h| regex_plan(&h)),
-        }
+        };
+        // The index folds ASCII only: a non-ASCII letter's other case is
+        // other bytes.
+        if self.case_insensitive && cased(&self.pattern) { ascii_only(q) } else { q }
     }
 }
 
@@ -3977,6 +3989,17 @@ pub enum TQ {
     Pair(u32),
     And(Vec<TQ>),
     Or(Vec<TQ>),
+}
+
+/// A plan without the trigrams and pairs holding non-ASCII bytes.
+fn ascii_only(q: TQ) -> TQ {
+    match q {
+        TQ::Tri(t) if t < 1 << 24 && t.to_be_bytes()[1..].iter().any(|&b| b >= 0x80) => TQ::All,
+        TQ::Pair(p) if p.to_be_bytes()[1..3].iter().any(|&b| b >= 0x80) => TQ::All,
+        TQ::And(v) => TQ::And(v.into_iter().map(ascii_only).collect()),
+        TQ::Or(v) => TQ::Or(v.into_iter().map(ascii_only).collect()),
+        q => q,
+    }
 }
 
 fn literal_plan(s: &[u8]) -> TQ {
@@ -4725,5 +4748,41 @@ mod tests {
     fn crlf_line_ends() {
         let g = Grep::new("foo$", GrepMode::Regex).unwrap();
         assert_eq!(lines(&g, b"foo\r\nbar\r\nfoo"), [(1, "foo".to_string()), (3, "foo".to_string())]);
+    }
+
+    /// A case-insensitive search through the index finds what the regex
+    /// folds to: ÉMILE for émile. Plans without such letters stay as they
+    /// were.
+    #[test]
+    fn case_folds_through_the_index() {
+        let d = std::env::temp_dir().join(format!("fsearch-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut docs = Docs::default();
+        // Real, as the index holds paths: files are opened refusing links.
+        let d = d.canonicalize().unwrap();
+        for (name, text) in [("b.txt", "dear ÉMILE\n"), ("c.txt", "a key for émile\n"), ("d.txt", "none\n")] {
+            let p = d.join(name);
+            std::fs::write(&p, text).unwrap();
+            docs.push(p.as_os_str().as_bytes(), text.len() as u64, 1);
+        }
+        docs.sort();
+        let mut c = Content::open(d.join("idx"));
+        let id = c.alloc_id();
+        c.push(build_segment(&c.dir, id, &docs, 0..docs.len()).unwrap());
+        let found = |pattern: &str, mode: GrepMode| {
+            let mut g = Grep::new(pattern, mode).unwrap();
+            g.budget = None;
+            let r = c.search(&g, &Query::parse("", "/h").unwrap());
+            let mut f: Vec<String> = r.files.iter().map(|f| String::from_utf8_lossy(&f.path[d.as_os_str().len() + 1..]).into_owned()).collect();
+            f.sort();
+            f
+        };
+        let r = [found("émile", GrepMode::Literal), found("é", GrepMode::Regex)];
+        let _ = std::fs::remove_dir_all(&d);
+        let e = vec!["b.txt".to_string(), "c.txt".into()];
+        assert_eq!(r, [e.clone(), e]);
+        let plan = |p: &str| format!("{:?}", Grep::new(p, GrepMode::Literal).unwrap().plan());
+        assert_eq!(plan("hello world"), format!("{:?}", literal_plan(b"hello world")));
     }
 }
